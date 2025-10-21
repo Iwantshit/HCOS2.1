@@ -1,0 +1,35 @@
+# SmartHome OS 目录结构拆分版
+# =================================
+# 建议项目结构：
+# smarthome_os/
+# ├── __init__.py
+# ├── core/
+# │ ├── __init__.py
+# │ ├── bus.py # 内部总线（Pub/Sub）
+# │ ├── cache.py # TTL 缓存 + 装饰器
+# │ ├── message_queue.py # 异步消息队列
+# │ ├── resources.py # 资源管理器
+# │ ├── kernel.py # 系统内核
+# │ ├── api.py # FastAPI 异步接口
+# │ └── plugins_base.py # 插件基类
+# ├── plugins/
+# │ ├── __init__.py
+# │ ├── light.py # 灯光插件
+# │ ├── thermostat.py # 恒温器插件
+# │ ├── event_logger.py # 日志插件
+# │ └── user_auth.py # 用户认证插件
+# ├── main.py # 测试程序入口
+# ├── requirements.txt # 项目依赖包
+# ├── specification.txt # 项目规范
+# ├── .log # 日志文件
+# └── design # 设计预期
+# =================================
+# 插件开发规范
+# =================================
+# 插件开发规范：
+# 1. 插件开发时，请勿修改 core 目录下的文件
+# 2. 插件开发时，请参考 core/plugins_base.py 创建插件
+
+
+
+
