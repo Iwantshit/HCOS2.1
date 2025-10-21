@@ -14,10 +14,12 @@
 # │ └── plugins_base.py # 插件基类
 # ├── plugins/
 # │ ├── __init__.py
-# │ ├── light.py # 灯光插件
-# │ ├── thermostat.py # 恒温器插件
-# │ ├── event_logger.py # 日志插件
-# │ └── user_auth.py # 用户认证插件
+# │ ├── device/
+# │ │ ├── light.py # 灯光插件
+# │ │ └── thermostat.py # 恒温器插件
+# │ ├── system/
+# │ │ ├── event_logger.py # 日志插件
+# │ └─└── user_auth.py # 用户认证插件
 # ├── main.py # 测试程序入口
 # ├── requirements.txt # 项目依赖包
 # ├── specification.txt # 项目规范
@@ -29,6 +31,7 @@
 # 插件开发规范：
 # 1. 插件开发时，请勿修改 core 目录下的文件
 # 2. 插件开发时，请参考 core/plugins_base.py 创建插件
+# 3. 同类多设备控制/设备信息在插件内部实现
 
 
 

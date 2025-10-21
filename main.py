@@ -1,10 +1,10 @@
 # ============================= main.py =============================
 import asyncio, logging
 from core.kernel import SmartHomeKernel
-from plugins.light import LightPlugin
-from plugins.thermostat import ThermostatPlugin
-from plugins.user_auth import UserAuthPlugin
-from plugins.event_logger import EventLoggerPlugin
+from plugins.device.light import LightPlugin
+from plugins.device.thermostat import ThermostatPlugin
+from plugins.sys.user_auth import UserAuthPlugin
+from plugins.sys.event_logger import EventLoggerPlugin
 from core.bus import Event
 
 logging.basicConfig(level=logging.INFO)
@@ -62,6 +62,12 @@ async def main():
         print(res)
     else:
         print(res)
+        
+    await k.bus.publish(Event("cmd.light.on", {"id": "light-01"}))
+    await k.bus.publish(Event("cmd.light.off", {"id": "light-02"}))
+    await k.bus.publish(Event("cmd.light.toggle", {"id": "light-01"}))
+    await k.bus.publish(Event("cmd.light.status", {}))
+
     await user_auth.stop()
     await asyncio.sleep(1)
 
