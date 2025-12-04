@@ -21,13 +21,15 @@ class ResourceManager:
     async def upsert(self, r: Resource):
         async with self._lock:
             self._res[r.resource_id] = r
-        await self._cache.set(f"res:{r.resource_id}", r)
-        await self._bus.publish(Event("res.upsert", {
+
+        # 不阻塞调用方
+        asyncio.create_task(self._cache.set(f"res:{r.resource_id}", r))
+        asyncio.create_task(self._bus.publish(Event("res.upsert", {
             "id": r.resource_id,
             "kind": r.kind,
             "state": r.state,
             "meta": r.meta
-        }))
+        })))
 
     async def remove(self, rid: str):
         async with self._lock:

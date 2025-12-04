@@ -15,6 +15,8 @@
 # ├── plugins/
 # │ ├── __init__.py
 # │ ├── device/
+# │ │ ├── __init__.py
+# | | ├── device_list.yaml # 设备列表和配置文件
 # │ │ ├── light.py # 灯光插件
 # │ │ └── thermostat.py # 恒温器插件
 # │ ├── system/
@@ -25,13 +27,110 @@
 # ├── specification.txt # 项目规范
 # ├── .log # 日志文件
 # └── design # 设计预期
+
+
 # =================================
-# 插件开发规范
+# 1. 插件开发规范
 # =================================
-# 插件开发规范：
-# 1. 插件开发时，请勿修改 core 目录下的文件
-# 2. 插件开发时，请参考 core/plugins_base.py 创建插件
-# 3. 同类多设备控制/设备信息在插件内部实现
+
+1. 插件开发时，请勿修改 core 目录下的文件
+2. 插件开发时，请参考 core/plugins_base.py 创建插件
+3. 同类多设备控制/设备信息在插件内部实现
+
+在一个插件class中需要包含以下内容:
+name: str 
+use_dedicated_threadpool: bool = False  
+is_collection: bool
+device: { ... } 
+
+def __init__(self): ... 
+async def setup(self, kernel) -> None: ... 
+async def start(self) -> None: ... 
+async def stop(self) -> None: ... 
+async def _update_state(self, rid, state, req_id=None): ... 
+
+name是插件名称，在配置文件中对应同名字段，用于简单的辨识设备以及获取设备信息
+在系统通信中name字段被用于订阅命令和发送命令
+
+例如：
+tasks = await k.bus.publish(Event("cmd.light.on", {"id": "light-01"})) 
+await asyncio.gather(*tasks) 
+
+这里的light就算是插件名称 name字段，light-01是指定操作的设备id。
+
+use_dedicated_threadpool 是否使用独立的线程池，默认为False，开启后这个插件会在一个单独的线程池中运行，防止高频的请求影响主线程的响应效率或高优先级的请求在主线程中一直插队其他请求造成响应延迟。
+
+is_collection 是否是集合设备，默认为False，如果为True则表示这个设备是一个集合设备，集合设备可以包含多个设备，例如：一个灯类别可以包含多个灯。
+device 设备信息 集合设备的配置信息一般如下，采用id-其他字段的索引形式 
+{
+    "light-01": {
+        "name": "light-01",
+        "type": "light",
+        "state": "off",
+        "brightness": 0,
+        "color": "#000000"
+        'unique_id': xxx_aaa_light_001
+    }，
+    ...
+}
+单独设备的配置信息如下：所有信息直接存储在字典中。
+{
+    'id': 'thermo_001'
+    'name': 'Main Thermostat'
+    'location': 'Hallway'
+    'unique_id': 'xxx_bbb_thermo_001'
+    'current': 22.0
+    'target': 100.0
+    'state': 'off'
+}
+这里并非强制要求，只是给出一种参考，device字段必须存在且为字典类型，而内容的设计形式可以由开发者根据需求自己定义。
+需要注意的是"light-01" 和 'id': 'thermo_001'为id字段，该字段必须存在，用于给系统锁定对应设备或者获取设备信息，在系统接口中广泛使用。
+'unique_id'是对应物理设备的唯一标识，目前仅为占位符，后续会根据使用的设备接入协议进行调整。
+其他字段根据插件的功能需求自行定义即可。
+
+def __init__(self): ... 
+必须包含的构造函数，通常构造函数的形式是def __init__(self, config), 这里为了兼容一些系统插件而写为了 def __init__(self): ...，后续可能会修改
+该函数负责初始化插件的软件信息，进行初始化的信息载入灯功能，并不负责实际的硬件启动或初始化。
+
+async def setup(self, kernel) -> None: ... 
+硬件初始化函数，通常在插件启动前调用，同步设备信息或初始化设备信息。例如硬件自检、状态同步、连接硬件等。
+
+async def start(self) -> None: ... 
+启动/注册函数，在这里进行例如 await self._subscribe("cmd.light.on", self._cmd_on) '开启'事件订阅，同时通知系统设备目前为可用状态，详细内容可以查看硬件示例中的实现。
+只有在事件订阅后插件才能接收到来着系统的命令。
+start并非是插件对应硬件的开/关状态的实现，而是在软件系统中在线/离线状态的一种声明，开关请额外在其他函数中实现，并将函数对应的指令订阅写在start函数中。
+
+async def stop(self) -> None: ... 
+同上，stop是关闭/注销函数，负责取消订阅并在系统中声明离线。请注意，如果插件是持续性运行的状态类插件或在系统中执行持续性的轮询，例如灯的开关状态或温度计的温度轮询，前者可以根据实际需求选择是否关闭，后者则需要先执行停止命令终止轮询。
+start函数一般在系统启动时执行，同理stop函数一般在系统关闭时执行，所以一般情况下不存在上述问题，但为了以防万一请在使用时注意上述细节。
+
+async def _update_state(self, rid, state, req_id=None): ... 
+这个函数负责向resources汇报更新自身状态，在self.device中的状态发生改变时向系统汇报以同步状态信息，同时通过evt事件广播更新内容，属于系统通信的一部分。使用示例参考示例插件。
+
+# =================================
+# 2. 命令/订阅
+# =================================
+
+系统命令可以通过 SmartHomeKernel.bus.publish 或 SmartHomeKernel.bus.request发布，二者均为异步接口，区别在于request进行了二次封装，返回信息更丰富。
+
+SmartHomeKernel.bus.publish(Event(topic, played, priority))
+topic 请求的事件 该事件由插件负责订阅或接收，无人订阅的事件会直接结束publish，系统会抛出无人订阅的警告。
+played 请求体，字典，其中包含请求信息，信息内容视插件而定。
+priority 队列中的优先级，默认为3，范围为0-9十级。给插队或礼让行为设计的拓展参数，通常情况简易使用默认值。
+返回tasks标识用于等待事件执行完毕 await asyncio.gather(*tasks) 
+
+SmartHomeKernel.bus.request(topic: str,payload: dict,success_event: str,fail_event: str,timeout: float = 3.0,priority: int = 3,)
+success_event 成功时返回的标签
+fail_event 失败时返回的标签
+timeout 无响应的超时时间
+返回值由插件决定
+
+轮询任务或延迟任务需要通过mq启动
+详见温度计插件中的示例
+MQ目前是一个简易版本，暂不展开讲解，后续可能会有较大的修改
+MessageQueue.put(Message)执行延迟命令
+
+
 
 
 

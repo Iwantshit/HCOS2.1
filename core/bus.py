@@ -1,20 +1,28 @@
-# core/bus.py
-import asyncio, time, logging, uuid
+# ============================= core/bus.py =============================
+import asyncio, time, logging, uuid, itertools
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+
+# ======================================================
+# Event with priority (0 = lowest, 9 = highest)
+# ======================================================
 class Event:
-    def __init__(self, topic: str, payload: Dict[str, Any], priority: int = 5):
+    def __init__(self, topic: str, payload: Dict[str, Any], priority: int = 3):
+        # clamp 0–9
+        self.priority = max(0, min(9, priority))
         self.topic = topic
         self.payload = payload
         self.ts = time.time()
-        self.priority = priority
 
-    def __lt__(self, other):
-        return self.priority < other.priority
+    def __repr__(self):
+        return f"Event(topic={self.topic}, prio={self.priority})"
 
 
+# ======================================================
+# InternalBus: real-time dispatch with priority fallback
+# ======================================================
 class InternalBus:
     def __init__(self):
         self._subs = {}
@@ -22,11 +30,14 @@ class InternalBus:
         self._running = False
         self._task = None
 
+        # 用于稳定排序相同优先级和相同时间的事件
+        self._counter = itertools.count()
+
     # ======================================================
-    # 订阅与取消订阅
+    # subscribe / unsubscribe
     # ======================================================
     async def subscribe(self, topic, callback):
-        logger.info(f"[Bus] subscribe id={id(self)} topic={topic}")
+        logger.info(f"[Bus] subscribe topic={topic}")
         self._subs.setdefault(topic, []).append(callback)
 
     async def unsubscribe(self, topic, callback):
@@ -35,17 +46,34 @@ class InternalBus:
             subs.remove(callback)
 
     # ======================================================
-    # 普通发布事件（入队或立即分发）
+    # publish — 实时分发 + 优先级用于堆积情况
     # ======================================================
-    async def publish(self, event, immediate: bool = False):
-        logger.info(f"[Bus] publish id={id(self)} topic={event.topic} priority={event.priority}")
-        if immediate:
-            await self._dispatch_event(event)
-        else:
-            await self._queue.put((event.priority, event))
+    async def publish(self, event: Event):
+        """
+        优先级队列结构：
+            (-priority, counter, event, future)
+
+        说明：
+            -priority 让“数值大的事件”排在最前面
+            counter 用来避免 PriorityQueue 比较两个 event 时出错
+        """
+
+        logger.info(f"[Bus] publish topic={event.topic} prio={event.priority}")
+
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+
+        # 🔥 使用 -priority，让 9 > 0
+        await self._queue.put(
+            (-event.priority, next(self._counter), event, fut)
+        )
+
+        # publish 等待 dispatch 完成（非阻塞事件循环）
+        tasks = await fut
+        return tasks
 
     # ======================================================
-    # 请求-响应机制
+    # request 保持不变
     # ======================================================
     async def request(
         self,
@@ -54,12 +82,8 @@ class InternalBus:
         success_event: str,
         fail_event: str,
         timeout: float = 3.0,
-        priority: int = 5,
+        priority: int = 3,
     ):
-        """
-        发布命令事件并等待响应事件。
-        返回 (bool, payload)
-        """
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         req_id = str(uuid.uuid4())
@@ -87,14 +111,14 @@ class InternalBus:
             await self.unsubscribe(fail_event, on_fail)
 
     # ======================================================
-    # 启动与停止分发循环
+    # 启动
     # ======================================================
     async def start(self):
         if self._running:
             return
         self._running = True
         self._task = asyncio.create_task(self._dispatch_loop())
-        logger.info("[Bus] dispatch loop started")
+        logger.info("[Bus] started")
 
     async def stop(self):
         self._running = False
@@ -104,23 +128,31 @@ class InternalBus:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("[Bus] dispatch loop stopped")
+        logger.info("[Bus] stopped")
 
     # ======================================================
-    # 内部分发逻辑
+    # Dispatcher Loop
     # ======================================================
     async def _dispatch_loop(self):
         while self._running:
             try:
-                _, event = await self._queue.get()
-                await self._dispatch_event(event)
+                _, _, event, fut = await self._queue.get()
+                tasks = await self._dispatch_event(event)
+
+                if not fut.done():
+                    fut.set_result(tasks)
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.exception(f"[Bus] dispatch error: {e}")
 
+    # ======================================================
+    # 分发事件
+    # ======================================================
     async def _dispatch_event(self, event):
         handlers = []
+
         for topic, subs in self._subs.items():
             if topic.endswith("*") and event.topic.startswith(topic[:-1]):
                 handlers += subs
@@ -128,14 +160,18 @@ class InternalBus:
                 handlers += subs
 
         if not handlers:
-            logger.debug(f"[Bus] No subscribers for {event.topic}")
-            return
+            logger.warning(f"[Bus] event '{event.topic}' has no subscribers")
+            return []
 
+        tasks = []
         start = time.time()
+
         for cb in handlers:
-            try:
-                await cb(event)
-            except Exception as e:
-                logger.exception(f"[Bus] handler {cb} failed: {e}")
+            tasks.append(asyncio.create_task(cb(event)))
+
         elapsed = (time.time() - start) * 1000
-        logger.info(f"[Bus] event {event.topic} handled by {len(handlers)} subscribers in {elapsed:.2f} ms")
+        logger.info(
+            f"[Bus] dispatch {event.topic} → {len(handlers)} handlers in {elapsed:.2f}ms"
+        )
+
+        return tasks

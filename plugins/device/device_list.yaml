@@ -1,0 +1,43 @@
+# plugins\device\device_list.yaml
+light:
+  name: light # 设备/集合名称 请与class中的name保持一致
+  type: LightPlugin # 设备class
+  manufacturer: HcOS Inc. # 设备制造商
+  model: xxx # 设备型号
+  capabilities: # 用于注册监听事件
+    - 'on'  # 开灯
+    - 'off' # 关灯
+    - toggle # 切换状态
+    - status # 查询状态
+  is_collection: true # 是否为设备集合
+  device: # 设备列表
+    - id: light_001 # 设备id 内部的所有内容会被在class中注册为设备信息 必要字段
+      name: Living Room Light # 设备名称
+      location: Living Room # 设备位置
+      unique_id: xxx_aaa_light_001 # 设备唯一标识 对应物理硬件
+      status: off # 设备初始状态 应在.setup中通过物理设备查询，这里设置默认值仅为在class中注册字段
+    - id: light_002 
+      name: Bedroom Light
+      location: Bedroom
+      unique_id: xxx_aaa_light_002
+      status: off # 设备初始状态 应在.setup中通过物理设备查询，这里设置默认值仅为在class中注册字段
+
+thermostat:
+  name: thermostat
+  type: ThermostatPlugin
+  manufacturer: HcOS Inc.
+  model: None
+  capabilities:
+    - set # 设置温度
+    - status # 查询状态
+    - 'on'
+    - 'off'
+  is_collection: false
+  device:
+    - id: thermo_001
+      name: Main Thermostat
+      location: Hallway
+      unique_id: xxx_bbb_thermo_001
+      current: 22.0
+      target: 100.0
+      state: off

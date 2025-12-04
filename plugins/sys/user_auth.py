@@ -68,6 +68,8 @@ class EncryptedUserDB:
 class UserAuthPlugin:
     name = "user_auth"
     use_dedicated_threadpool = False  # 不隔离线程池
+    device = {}
+    is_collection = False
 
     def __init__(self, db_path="userdb.enc", key: bytes = b"DefaultSecretKey"):
         self.k = None
@@ -81,14 +83,6 @@ class UserAuthPlugin:
 
     async def setup(self, kernel):
         self.k = kernel
-        await self.k.bus.subscribe("cmd.user.register", self._handle_register)
-        await self.k.bus.subscribe("cmd.user.login", self._handle_login)
-        await self.k.bus.subscribe("cmd.user.set_role", self._handle_set_role)
-        await self.k.bus.subscribe("cmd.user.list", self._handle_list_users)
-        logger.info("[UserAuth] setup complete")
-
-    async def start(self):
-        # 从数据库读取用户信息
         self._users = self.db.load()
         await self.k.resources.upsert(Resource(
             resource_id=f"user:{self.super_admin['phone']}",
@@ -103,6 +97,15 @@ class UserAuthPlugin:
                 state=info
             ))
         logger.info(f"[UserAuth] 已加载 {len(self._users)} 个用户")
+        logger.info("[UserAuth] setup complete")
+
+    async def start(self):
+        # 从数据库读取用户信息
+        await self.k.bus.subscribe("cmd.user.register", self._handle_register)
+        await self.k.bus.subscribe("cmd.user.login", self._handle_login)
+        await self.k.bus.subscribe("cmd.user.set_role", self._handle_set_role)
+        await self.k.bus.subscribe("cmd.user.list", self._handle_list_users)
+        logger.info("[UserAuth] start complete")
 
     async def stop(self):
         # 停止前保存用户数据库
@@ -305,3 +308,6 @@ class UserAuthPlugin:
     # ------------------ 工具函数 ------------------
     def _hash_password(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    async def _update_state(self, rid, state, req_id=None):
+        pass

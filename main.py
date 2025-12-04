@@ -6,35 +6,57 @@ from plugins.device.thermostat import ThermostatPlugin
 from plugins.sys.user_auth import UserAuthPlugin
 from plugins.sys.event_logger import EventLoggerPlugin
 from core.bus import Event
+from core.plugins_base import Plugin, validate_plugin, read_yaml_file
 
 logging.basicConfig(level=logging.INFO)
-
+        
 async def main():
     key = b"MySecretAESKey!"
     k = SmartHomeKernel()
-    light = LightPlugin()
-    thermo = ThermostatPlugin()
-    user_auth = UserAuthPlugin(db_path="data/userdb.enc", key=key)
+    await k.start()
 
-    event_logger = EventLoggerPlugin()
+    # 系统插件 （其实不需要自检
+    v, msg = validate_plugin(UserAuthPlugin, is_sys_plugin=True)
+    print(msg)
+    if v:
+        user_auth = UserAuthPlugin(db_path="data/userdb.enc", key=key)
+        k.register_plugin_executor(user_auth)
 
-    k.register_plugin_executor(light)
-    k.register_plugin_executor(event_logger)
-    k.register_plugin_executor(thermo)
-    k.register_plugin_executor(user_auth)
+    v, msg = validate_plugin(EventLoggerPlugin, is_sys_plugin=True)
+    print(msg)
+    if v:
+        event_logger = EventLoggerPlugin()
+        k.register_plugin_executor(event_logger)
 
-    await light .setup(k)
+    # 设备列表配置（未来可扩展为动态加载插件 & 设备）
+    config = read_yaml_file(r"plugins\device\device_list.yaml") # 读取设备配置
+
+    v, msg = validate_plugin(LightPlugin, config=config[LightPlugin.name])
+    print(msg)
+    if v:
+        light = LightPlugin(config[LightPlugin.name])
+        k.register_plugin_executor(light)
+
+    v, msg = validate_plugin(ThermostatPlugin, config=config[ThermostatPlugin.name])
+    print(msg)
+    if v:
+        thermo = ThermostatPlugin(config[ThermostatPlugin.name])
+        k.register_plugin_executor(thermo)
+
+
+
+    await light.setup(k)
     await thermo.setup(k)
     await user_auth.setup(k)
     await event_logger.setup(k)
-    await k.start()
-
-    # await light.start()
-    # await thermo.start()
+    
+    await light.start()
+    await thermo.start()
     await user_auth.start()
     await event_logger.start()
 
-    # await asyncio.sleep(5)
+    # await k.bus.publish(Event("cmd.thermostat.on", {}))
+    # await asyncio.sleep(100)
     # await light.stop()
     # await thermo.stop()
 
@@ -63,13 +85,22 @@ async def main():
     else:
         print(res)
         
-    await k.bus.publish(Event("cmd.light.on", {"id": "light-01"}))
-    await k.bus.publish(Event("cmd.light.off", {"id": "light-02"}))
-    await k.bus.publish(Event("cmd.light.toggle", {"id": "light-01"}))
-    await k.bus.publish(Event("cmd.light.status", {}))
+    tasks = await k.bus.publish(Event("cmd.light.on", {"id": "light-01"})) 
+    await asyncio.gather(*tasks) 
+    tasks = await k.bus.publish(Event("cmd.light.off", {"id": "light-02"}))
+    await asyncio.gather(*tasks) 
+    tasks = await k.bus.publish(Event("cmd.light.toggle", {"id": "light-01"}))
+    await asyncio.gather(*tasks) 
+    tasks = await k.bus.publish(Event("cmd.light.toggle", {"id": "light-03"}))
+    await asyncio.gather(*tasks) 
+    tasks = await k.bus.publish(Event("cmd.light.status", {}))
+    await asyncio.gather(*tasks) 
+
+    tasks = await k.bus.publish(Event("cmd.thermostat.on", {})) 
+    await asyncio.gather(*tasks) 
 
     await user_auth.stop()
-    await asyncio.sleep(1)
+    await asyncio.sleep(10)
 
     await k.stop()
 
