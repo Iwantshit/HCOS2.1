@@ -25,7 +25,9 @@ class LightPlugin():
                 logger.info(f"[LightPlugin] 加载设备 {k}: {v}")
                 if k != "id":
                     self.device[device["id"]][k] = v
-        
+            # Initialize state if not provided in config
+            if "state" not in self.device[device["id"]]:
+                self.device[device["id"]]["state"] = "off"        
 
     async def setup(self, kernel):
         self.k = kernel
@@ -161,8 +163,6 @@ class LightPlugin():
 
         await self.k.run_in_plugin_executor(self, self._sync_toggle_device, rid, new_state)
         await self._update_state(rid, new_state, e.payload.get("req_id"))
-
-    # ------------------ 状态查询 ------------------
     async def _cmd_status(self, e: Event):
         rid = e.payload.get("id")
 
@@ -183,8 +183,13 @@ class LightPlugin():
             }))
             return
         
+        # Filter to return only id and state for each device
+        lights_state = {
+            device_id: {"state": device_data.get("state")}
+            for device_id, device_data in self.device.items()
+        }
         await self.k.bus.publish(Event("evt.light.all_states", {
-            "lights": self.device,
+            "lights": lights_state,
             "req_id": e.payload.get("req_id")
         }))
 

@@ -14,6 +14,7 @@ async def main():
     key = b"MySecretAESKey!"
     k = SmartHomeKernel()
     await k.start()
+    created_plugins = []
 
     # 系统插件 （其实不需要自检
     v, msg = validate_plugin(UserAuthPlugin, is_sys_plugin=True)
@@ -21,12 +22,14 @@ async def main():
     if v:
         user_auth = UserAuthPlugin(db_path="data/userdb.enc", key=key)
         k.register_plugin_executor(user_auth)
+        created_plugins.append(user_auth)
 
     v, msg = validate_plugin(EventLoggerPlugin, is_sys_plugin=True)
     print(msg)
     if v:
         event_logger = EventLoggerPlugin()
         k.register_plugin_executor(event_logger)
+        created_plugins.append(event_logger)
 
     # 设备列表配置（未来可扩展为动态加载插件 & 设备）
     config = read_yaml_file(r"plugins\device\device_list.yaml") # 读取设备配置
@@ -36,12 +39,14 @@ async def main():
     if v:
         light = LightPlugin(config[LightPlugin.name])
         k.register_plugin_executor(light)
+        created_plugins.append(light)
 
     v, msg = validate_plugin(ThermostatPlugin, config=config[ThermostatPlugin.name])
     print(msg)
     if v:
         thermo = ThermostatPlugin(config[ThermostatPlugin.name])
         k.register_plugin_executor(thermo)
+        created_plugins.append(thermo)
 
 
 
@@ -99,7 +104,22 @@ async def main():
     tasks = await k.bus.publish(Event("cmd.thermostat.on", {})) 
     await asyncio.gather(*tasks) 
 
-    await user_auth.stop()
+    logger = logging.getLogger(__name__)
+
+    # 依次停止所有已经创建并注册的插件，按创建顺序停止
+    for plugin in created_plugins:
+        if plugin is None:
+            continue
+        stop_fn = getattr(plugin, "stop", None)
+        if stop_fn is None:
+            continue
+        try:
+            # 支持 async stop 方法
+            await stop_fn()
+            logger.info("Stopped plugin: %s", getattr(plugin, "name", repr(plugin)))
+        except Exception as e:
+            logger.exception("Error while stopping plugin %s: %s", getattr(plugin, "name", repr(plugin)), e)
+
     await asyncio.sleep(10)
 
     await k.stop()

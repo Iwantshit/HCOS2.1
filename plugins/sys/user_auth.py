@@ -68,13 +68,12 @@ class EncryptedUserDB:
 class UserAuthPlugin:
     name = "user_auth"
     use_dedicated_threadpool = False  # 不隔离线程池
-    device = {}
-    is_collection = False
-
     def __init__(self, db_path="userdb.enc", key: bytes = b"DefaultSecretKey"):
         self.k = None
         self._users: Dict[str, Dict] = {}
         self.db = EncryptedUserDB(db_path, key)
+        self.device = {}  # Instance attribute instead of class attribute
+        self.is_collection = False
         self.super_admin = {
             "username": "root",
             "phone": "00000000000",
@@ -100,13 +99,12 @@ class UserAuthPlugin:
         logger.info("[UserAuth] setup complete")
 
     async def start(self):
-        # 从数据库读取用户信息
+        # 订阅用户操作事件
         await self.k.bus.subscribe("cmd.user.register", self._handle_register)
         await self.k.bus.subscribe("cmd.user.login", self._handle_login)
         await self.k.bus.subscribe("cmd.user.set_role", self._handle_set_role)
         await self.k.bus.subscribe("cmd.user.list", self._handle_list_users)
         logger.info("[UserAuth] start complete")
-
     async def stop(self):
         # 停止前保存用户数据库
         self.db.save(self._users)

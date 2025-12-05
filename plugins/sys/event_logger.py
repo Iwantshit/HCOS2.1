@@ -16,6 +16,8 @@ class EventLoggerPlugin:
               "en" 英文
         """
         self.lang = lang
+        self.device = {}
+        self.is_collection = False
 
     async def setup(self, kernel):
         self.k = kernel

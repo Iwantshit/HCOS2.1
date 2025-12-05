@@ -68,22 +68,20 @@ device 设备信息 集合设备的配置信息一般如下，采用id-其他字
         "type": "light",
         "state": "off",
         "brightness": 0,
-        "color": "#000000"
-        'unique_id': xxx_aaa_light_001
-    }，
+        "color": "#000000",
+        'unique_id': 'xxx_aaa_light_001'
+    },
     ...
-}
-单独设备的配置信息如下：所有信息直接存储在字典中。
+}单独设备的配置信息如下：所有信息直接存储在字典中。
 {
-    'id': 'thermo_001'
-    'name': 'Main Thermostat'
-    'location': 'Hallway'
-    'unique_id': 'xxx_bbb_thermo_001'
-    'current': 22.0
-    'target': 100.0
+    'id': 'thermo_001',
+    'name': 'Main Thermostat',
+    'location': 'Hallway',
+    'unique_id': 'xxx_bbb_thermo_001',
+    'current': 22.0,
+    'target': 100.0,
     'state': 'off'
 }
-这里并非强制要求，只是给出一种参考，device字段必须存在且为字典类型，而内容的设计形式可以由开发者根据需求自己定义。
 需要注意的是"light-01" 和 'id': 'thermo_001'为id字段，该字段必须存在，用于给系统锁定对应设备或者获取设备信息，在系统接口中广泛使用。
 'unique_id'是对应物理设备的唯一标识，目前仅为占位符，后续会根据使用的设备接入协议进行调整。
 其他字段根据插件的功能需求自行定义即可。
@@ -113,9 +111,9 @@ async def _update_state(self, rid, state, req_id=None): ...
 
 系统命令可以通过 SmartHomeKernel.bus.publish 或 SmartHomeKernel.bus.request发布，二者均为异步接口，区别在于request进行了二次封装，返回信息更丰富。
 
-SmartHomeKernel.bus.publish(Event(topic, played, priority))
+SmartHomeKernel.bus.publish(Event(topic, payload, priority))
 topic 请求的事件 该事件由插件负责订阅或接收，无人订阅的事件会直接结束publish，系统会抛出无人订阅的警告。
-played 请求体，字典，其中包含请求信息，信息内容视插件而定。
+payload 请求体，字典，其中包含请求信息，信息内容视插件而定。
 priority 队列中的优先级，默认为3，范围为0-9十级。给插队或礼让行为设计的拓展参数，通常情况简易使用默认值。
 返回tasks标识用于等待事件执行完毕 await asyncio.gather(*tasks) 
 

@@ -5,8 +5,7 @@ class Plugin(Protocol):
     name: str 
     use_dedicated_threadpool: bool = False  # 默认不隔离
     is_collection: bool
-    device: { ... } # 无论单设备还是集合，都使用device属性表示设备信息，单设备时为单个dict，集合时为id到dict的映射
-
+    device: dict | dict[str, dict]  # 无论单设备还是集合，都使用device属性表示设备信息，单设备时为单个dict，集合时为id到dict的映射
     def __init__(self): ... # 构造函数
     async def setup(self, kernel) -> None: ... # kernel 注入和部分内容的初始化
     async def start(self) -> None: ... # 启动插件（注册事件等）并告知系统设置为在线状态
@@ -21,8 +20,7 @@ def validate_plugin(plugin_cls, is_sys_plugin: bool = False, config: Mapping = {
     """验证插件类是否符合 Plugin 模板要求"""
 
     errors = []
-    name = plugin_cls.name
-
+    name = getattr(plugin_cls, 'name', '<unnamed>')
     # ---------- 1. 必须能实例化 ----------
     try:
         if is_sys_plugin:  # 系统插件
@@ -86,7 +84,30 @@ def read_yaml_file(yaml_path:str):
     yaml_path: yaml文件的路径
     """
     import yaml
+    import logging
 
-    with open(yaml_path, "r", encoding="utf-8") as file:
-        data = yaml.safe_load(file)
-    return data
+    logger = logging.getLogger(__name__)
+
+    try:
+        with open(yaml_path, "r", encoding="utf-8") as file:
+            try:
+                data = yaml.safe_load(file)
+            except yaml.YAMLError as ye:
+                msg = f"Failed to parse YAML file '{yaml_path}': {ye}"
+                logger.error(msg)
+                # 将解析错误以更具描述性的消息重新抛出，保留原始异常作为原因
+                raise yaml.YAMLError(msg) from ye
+        return data
+    except FileNotFoundError as fnf:
+        msg = f"YAML file not found: {yaml_path}"
+        logger.error(msg)
+        raise FileNotFoundError(msg) from fnf
+    except PermissionError as pe:
+        msg = f"Permission denied when reading YAML file: {yaml_path}"
+        logger.error(msg)
+        raise PermissionError(msg) from pe
+    except Exception as e:
+        # 广泛捕获以便为调用方提供有用的上下文信息
+        msg = f"Unexpected error reading YAML file '{yaml_path}': {e}"
+        logger.exception(msg)
+        raise RuntimeError(msg) from e
