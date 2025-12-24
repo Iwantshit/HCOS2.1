@@ -26,7 +26,8 @@ thermostat:
   name: thermostat
   type: ThermostatPlugin
   manufacturer: HcOS Inc.
-  model: null  capabilities:
+  model: null  
+  capabilities:
     - set # 设置温度
     - status # 查询状态
     - 'on'
