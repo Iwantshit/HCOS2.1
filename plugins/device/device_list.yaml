@@ -8,19 +8,19 @@ light:
     - 'on'  # 开灯
     - 'off' # 关灯
     - toggle # 切换状态
-    - status # 查询状态
-  is_collection: true # 是否为设备集合
+    - state # 查询状态
+  # is_collection: true # 是否为设备集合
   device: # 设备列表
     - id: light_001 # 设备id 内部的所有内容会被在class中注册为设备信息 必要字段
       name: Living Room Light # 设备名称
       location: Living Room # 设备位置
       unique_id: xxx_aaa_light_001 # 设备唯一标识 对应物理硬件
-      status: off # 设备初始状态 应在.setup中通过物理设备查询，这里设置默认值仅为在class中注册字段
+      state: off # 设备初始状态 应在.setup中通过物理设备查询，这里设置默认值仅为在class中注册字段
     - id: light_002 
       name: Bedroom Light
       location: Bedroom
       unique_id: xxx_aaa_light_002
-      status: off # 设备初始状态 应在.setup中通过物理设备查询，这里设置默认值仅为在class中注册字段
+      state: off # 设备初始状态 应在.setup中通过物理设备查询，这里设置默认值仅为在class中注册字段
 
 thermostat:
   name: thermostat
@@ -29,10 +29,10 @@ thermostat:
   model: null  
   capabilities:
     - set # 设置温度
-    - status # 查询状态
+    - state # 查询状态
     - 'on'
     - 'off'
-  is_collection: false
+  # is_collection: false
   device:
     - id: thermo_001
       name: Main Thermostat

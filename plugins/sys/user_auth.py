@@ -146,7 +146,7 @@ class UserAuthPlugin:
 
             # 成功事件
             await self.k.bus.publish(Event("evt.user.register_success", {
-                "status": "ok",
+                "state": "ok",
                 "data": {"phone": phone, "role": "user"},
                 "req_id": req_id
             }))
@@ -155,7 +155,7 @@ class UserAuthPlugin:
         except Exception as ex:
             logger.exception(f"[UserAuth] 注册失败: {ex}")
             await self.k.bus.publish(Event("evt.user.register_failed", {
-                "status": "error",
+                "state": "error",
                 "reason": str(ex),
                 "req_id": req_id
             }))
@@ -174,7 +174,7 @@ class UserAuthPlugin:
             if phone == self.super_admin["phone"]:
                 if password == phone:
                     await self.k.bus.publish(Event("evt.user.login_success", {
-                        "status": "ok",
+                        "state": "ok",
                         "data": {"phone": phone, "role": "super_admin"},
                         "req_id": req_id
                     }))
@@ -192,7 +192,7 @@ class UserAuthPlugin:
 
             # 登录成功
             await self.k.bus.publish(Event("evt.user.login_success", {
-                "status": "ok",
+                "state": "ok",
                 "data": {"phone": phone, "role": user["role"]},
                 "req_id": req_id
             }))
@@ -201,7 +201,7 @@ class UserAuthPlugin:
         except Exception as ex:
             logger.exception(f"[UserAuth] 登录失败: {ex}")
             await self.k.bus.publish(Event("evt.user.login_failed", {
-                "status": "error",
+                "state": "error",
                 "reason": str(ex),
                 "req_id": req_id
             }))
@@ -238,7 +238,7 @@ class UserAuthPlugin:
 
             # 成功事件
             await self.k.bus.publish(Event("evt.user.role_change_success", {
-                "status": "ok",
+                "state": "ok",
                 "data": {"target": target, "new_role": new_role},
                 "req_id": req_id
             }))
@@ -254,7 +254,7 @@ class UserAuthPlugin:
         except Exception as ex:
             logger.exception(f"[UserAuth] 权限修改失败: {ex}")
             await self.k.bus.publish(Event("evt.user.role_change_failed", {
-                "status": "error",
+                "state": "error",
                 "reason": str(ex),
                 "req_id": req_id
             }))
@@ -288,7 +288,7 @@ class UserAuthPlugin:
             users = list(self._users.values())[start:end]
 
             await self.k.bus.publish(Event("evt.user.list_success", {
-                "status": "ok",
+                "state": "ok",
                 "data": users,
                 "page": page,
                 "total": len(self._users),
@@ -299,7 +299,7 @@ class UserAuthPlugin:
         except Exception as ex:
             logger.exception(f"[UserAuth] 用户列表请求失败: {ex}")
             await self.k.bus.publish(Event("evt.user.list_failed", {
-                "status": "error",
+                "state": "error",
                 "reason": str(ex),
                 "req_id": req_id
             }))

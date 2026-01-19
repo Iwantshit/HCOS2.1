@@ -1,13 +1,46 @@
 # ============================= core/plugins_base.py =============================
 from typing import Protocol, Awaitable
 
+class Entity:
+    # id: str
+    # name: str
+    # location: str
+    # unique_id: str
+    # state: str
+
+    def __init__(self, id: str, name: str, location: str, unique_id: str, state: str, extra_parameter: dict, device_info: dict, ):
+        """
+        id: 设备在插件dict中的id
+        name: 设备名称
+        location: 设备位置
+        unique_id: 设备唯一标识符
+        state: 设备状态on/off
+        extra_parameter: 设备额外的参数
+        """
+        self.id = id
+        self.name = name
+        self.location = location
+        self.unique_id = unique_id
+        self.state = state
+        self.available = True
+        self.extra_parameter = extra_parameter
+        self.device_info = device_info
+    
+    def update_state(self, state: str):
+        self.state = state
+
+    def update_available(self, available: bool):
+        self.available = available
+
+        
+
 class Plugin(Protocol):
     name: str 
     use_dedicated_threadpool: bool = False  # 默认不隔离
     is_collection: bool
     device: dict | dict[str, dict]  # 无论单设备还是集合，都使用device属性表示设备信息，单设备时为单个dict，集合时为id到dict的映射
     def __init__(self): ... # 构造函数
-    async def setup(self, kernel) -> None: ... # kernel 注入和部分内容的初始化
+    async def setup(self, kernel) -> list[Entity]: ... # kernel 注入和部分内容的初始化
     async def start(self) -> None: ... # 启动插件（注册事件等）并告知系统设置为在线状态
     async def stop(self) -> None: ... # 停止插件（注销事件等）是否取消正在运行的任务视具体插件而定 并告知系统设置为离线状态
     async def _update_state(self, rid, state, req_id=None): ... # 更新信息系统中的设备状态并进行evt广播，仅对设备插件有效
@@ -36,7 +69,7 @@ def validate_plugin(plugin_cls, is_sys_plugin: bool = False, config: Mapping = {
     required_attrs = [
         "name",
         "use_dedicated_threadpool",
-        "is_collection",
+        # "is_collection",
         "device"
     ]
 
@@ -48,14 +81,10 @@ def validate_plugin(plugin_cls, is_sys_plugin: bool = False, config: Mapping = {
     if hasattr(instance, "device"):
         dev = instance.device
 
-        if instance.is_collection:
-            # device 必须是 dict 映射：id -> 状态dict
-            if not isinstance(dev, Mapping):
-                errors.append(f"{name}.device 必须是 dict（集合插件）")
-        else:
-            # device 必须是单独的状态 dict
-            if not isinstance(dev, dict):
-                errors.append(f"{name}.device 必须是 dict（单设备插件）")
+        # device 必须是 dict 映射：id -> 状态dict
+        if not isinstance(dev, Mapping):
+            errors.append(f"{name}.device 必须是 dict（集合插件）")
+
 
     # ---------- 4. 检查必要方法 ----------
     required_methods = [

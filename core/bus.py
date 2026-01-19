@@ -1,13 +1,13 @@
-# ============================= core/bus.py =============================
-import asyncio, time, logging, uuid, itertools
-from typing import Any, Dict
+import asyncio
+import itertools
+import time
+import uuid
+import logging
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
 
-# ======================================================
-# Event with priority (0 = lowest, 9 = highest)
-# ======================================================
 class Event:
     def __init__(self, topic: str, payload: Dict[str, Any], priority: int = 3):
         # clamp 0–9
@@ -21,7 +21,7 @@ class Event:
 
 
 # ======================================================
-# InternalBus: real-time dispatch with priority fallback
+# InternalBus
 # ======================================================
 class InternalBus:
     def __init__(self):
@@ -30,7 +30,7 @@ class InternalBus:
         self._running = False
         self._task = None
 
-        # 用于稳定排序相同优先级和相同时间的事件
+        # 稳定排序
         self._counter = itertools.count()
 
     # ======================================================
@@ -46,34 +46,50 @@ class InternalBus:
             subs.remove(callback)
 
     # ======================================================
-    # publish — 实时分发 + 优先级用于堆积情况
+    # publish (RPC-style: wait for dispatch)
     # ======================================================
     async def publish(self, event: Event):
         """
-        优先级队列结构：
-            (-priority, counter, event, future)
-
-        说明：
-            -priority 让“数值大的事件”排在最前面
-            counter 用来避免 PriorityQueue 比较两个 event 时出错
+        publish = 等待 dispatch 完成
+        返回已 create 的 tasks
         """
+        if not self._running:
+            raise RuntimeError("Bus not started")
 
         logger.info(f"[Bus] publish topic={event.topic} prio={event.priority}")
 
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
 
-        # 🔥 使用 -priority，让 9 > 0
         await self._queue.put(
             (-event.priority, next(self._counter), event, fut)
         )
 
-        # publish 等待 dispatch 完成（非阻塞事件循环）
         tasks = await fut
         return tasks
 
     # ======================================================
-    # request 保持不变
+    # publish_async (fire-and-forget)
+    # ======================================================
+    def publish_async(self, event: Event):
+        """
+        fire-and-forget
+        不等待 dispatch
+        不返回 tasks
+        """
+        if not self._running:
+            raise RuntimeError("Bus not started")
+
+        logger.info(f"[Bus] publish_async topic={event.topic} prio={event.priority}")
+
+        asyncio.create_task(
+            self._queue.put(
+                (-event.priority, next(self._counter), event, None)
+            )
+        )
+
+    # ======================================================
+    # request 
     # ======================================================
     async def request(
         self,
@@ -111,7 +127,7 @@ class InternalBus:
             await self.unsubscribe(fail_event, on_fail)
 
     # ======================================================
-    # 启动
+    # lifecycle
     # ======================================================
     async def start(self):
         if self._running:
@@ -131,15 +147,16 @@ class InternalBus:
         logger.info("[Bus] stopped")
 
     # ======================================================
-    # Dispatcher Loop
+    # dispatcher loop
     # ======================================================
     async def _dispatch_loop(self):
         while self._running:
             try:
                 _, _, event, fut = await self._queue.get()
+
                 tasks = await self._dispatch_event(event)
 
-                if not fut.done():
+                if fut is not None and not fut.done():
                     fut.set_result(tasks)
 
             except asyncio.CancelledError:
@@ -148,9 +165,9 @@ class InternalBus:
                 logger.exception(f"[Bus] dispatch error: {e}")
 
     # ======================================================
-    # 分发事件
+    # dispatch event
     # ======================================================
-    async def _dispatch_event(self, event):
+    async def _dispatch_event(self, event: Event):
         handlers = []
 
         for topic, subs in self._subs.items():
@@ -167,7 +184,14 @@ class InternalBus:
         start = time.time()
 
         for cb in handlers:
-            tasks.append(asyncio.create_task(cb(event)))
+            task = asyncio.create_task(cb(event))
+            task.add_done_callback(
+                lambda t, ev=event: logger.exception(
+                    f"[Bus] handler error for {ev.topic}",
+                    exc_info=t.exception()
+                ) if t.exception() else None
+            )
+            tasks.append(task)
 
         elapsed = (time.time() - start) * 1000
         logger.info(

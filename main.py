@@ -89,21 +89,25 @@ async def main():
         print(res)
     else:
         print(res)
-        
-    tasks = await k.bus.publish(Event("cmd.light.on", {"id": "light-01"})) 
+    
+    # tasks = k.bus.publish_async(Event("cmd.thermostat.on", {'id': 'thermo_001'})) 
+    tasks = k.bus.publish_async(Event("cmd.light.on", {"id": "light_001"})) 
+    # await asyncio.gather(*tasks) 
+    tasks = k.bus.publish_async(Event("cmd.light.off", {"id": "light_002"}))
+    # await asyncio.gather(*tasks) 
+    await asyncio.sleep(4)
+    tasks = await k.bus.publish(Event("cmd.light.toggle", {"id": "light_001"}))
     await asyncio.gather(*tasks) 
-    tasks = await k.bus.publish(Event("cmd.light.off", {"id": "light-02"}))
+    tasks = await k.bus.publish(Event("cmd.light.toggle", {"id": "light_003"}))
     await asyncio.gather(*tasks) 
-    tasks = await k.bus.publish(Event("cmd.light.toggle", {"id": "light-01"}))
-    await asyncio.gather(*tasks) 
-    tasks = await k.bus.publish(Event("cmd.light.toggle", {"id": "light-03"}))
-    await asyncio.gather(*tasks) 
-    tasks = await k.bus.publish(Event("cmd.light.status", {}))
+    tasks = await k.bus.publish(Event("cmd.light.state", {}))
     await asyncio.gather(*tasks) 
 
-    tasks = await k.bus.publish(Event("cmd.thermostat.on", {})) 
-    await asyncio.gather(*tasks) 
-
+    # tasks = await k.bus.publish(Event("cmd.thermostat.on", {'id': 'thermo_001'})) 
+    
+    # await asyncio.gather(*tasks) 
+    tasks = k.bus.publish_async(Event("cmd.thermostat.on", {'id': 'thermo_001'})) 
+    await asyncio.sleep(20)
     logger = logging.getLogger(__name__)
 
     # 依次停止所有已经创建并注册的插件，按创建顺序停止
