@@ -1,276 +1,417 @@
-# ============================= plugins/light.py =============================
+# plugins/light.py
+import asyncio
+import logging
+import aiohttp
+import socket
+from typing import Dict, Optional, Any
 from core.bus import Event
 from core.resources import Resource
-from core.message_queue import Message
-import asyncio, logging, time
-from core.plugins_base import Entity
+from core.plugins_base import Plugin, Entity
 
 logger = logging.getLogger(__name__)
 
 class LightEntity(Entity):
-
-    def __init__(self, id: str, name: str, location: str, unique_id: str, state: str, extra_parameter, device_info: dict):
+    """ESP8266 网络灯光设备"""
+    
+    def __init__(
+            self, 
+            id: str, 
+            name: str, 
+            location: str, 
+            unique_id: str, 
+            state: str, 
+            extra_parameter: dict,
+            device_info: dict,
+            brightness: int = 0
+    ):
         super().__init__(id, name, location, unique_id, state, extra_parameter, device_info)
-
-    def sync_turn_on(self, **kwargs) -> bool:
-        self.update_state("on")# 只能在实体class中调用update_state
-        time.sleep(2)
-        return True
-    def sync_turn_off(self, **kwargs) -> bool:
-        self.update_state("off")
-        time.sleep(2)
-        return True
+        self.brightness = brightness
+        self.ip = extra_parameter.get('ip', '')
+        self.online = False
+        self.last_seen = 0
 
 
-class LightPlugin():
+class LightPlugin(Plugin):
+    """ESP8266 网络灯光插件"""
+    
     name = "light"
     use_dedicated_threadpool = False
+    is_collection = True
+    device = {}
 
-    def __init__(self, config):
-        super().__init__()
-        # self.is_collection = True
-        self._config = config
-
-        # 记录订阅过的事件 → stop() 时可以注销
+    def __init__(self, config=None):  # 修改这里：config 参数为可选
+        # 如果系统传递了配置就使用，否则用空字典
+        self.config = config if config is not None else {}
+        self._entities: Dict[str, LightEntity] = {}  # 设备ID -> LightEntity
+        self._session: Optional[aiohttp.ClientSession] = None
         self._subscriptions = []
+        self._poll_task = None
+        self._discovery_task = None
         
+        # 配置参数（使用默认值或配置中的值）
+        self.poll_interval = self.config.get("poll_interval", 10)
+        self.discovery_interval = self.config.get("discovery_interval", 60)
+        self.http_timeout = self.config.get("http_timeout", 3)
+        
+        # 初始化设备字典（为了兼容性）
         self.device = {}
 
-    async def setup(self, kernel) -> list[Entity]:
+    async def setup(self, kernel):
+        """初始化插件"""
         self.k = kernel
-        logger.info("[LightPlugin] 硬件自检中...")
-        # （你可以未来在这里做真正的硬件检查）
-        # await asyncio.sleep(0.2)
-        return_entity_list = []
-        for device in self._config["device"]:
-            extra_parameter = {}
-            for k, v in device.items():
-                    if k not in ['id', 'name', 'location', 'unique_id', 'state']:
-                        extra_parameter[k] = v
-            new_light_entity = LightEntity(
-                id=device["id"],
-                name=device["name"],
-                location=device["location"],
-                unique_id=device["unique_id"],
-                state="off",
-                extra_parameter=extra_parameter,
-                device_info={
-                    'info': None # 设备信息
-                }
-            )
-            self.device[device["id"]] = new_light_entity
-            return_entity_list.append(new_light_entity)
-        logger.info("[LightPlugin] 硬件自检完成，插件已启动")
-        return return_entity_list
-    
-    # ------------------ 添加订阅并记录 ------------------
-    async def _subscribe(self, topic, callback):
-        """封装订阅方法，记录订阅信息用于 stop() 注销事件。"""
-        await self.k.bus.subscribe(topic, callback)
-        self._subscriptions.append((topic, callback))
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=self.http_timeout)
+        )
+        
+        logger.info("[LightPlugin] 插件初始化完成")
+        return []  # 返回空列表，通过发现或API添加设备
 
-    # ------------------ 插件启动 ------------------
     async def start(self):
-
-        # ⭐ 订阅并记录所有事件
-
+        """启动插件"""
+        logger.info("[LightPlugin] 正在启动插件...")
+        
+        # 订阅命令
         await self._subscribe("cmd.light.on", self._cmd_on)
         await self._subscribe("cmd.light.off", self._cmd_off)
+        await self._subscribe("cmd.light.brightness", self._cmd_brightness)
         await self._subscribe("cmd.light.toggle", self._cmd_toggle)
         await self._subscribe("cmd.light.state", self._cmd_state)
+        await self._subscribe("cmd.light.add", self._cmd_add_device)  # 添加设备的命令
+        await self._subscribe("cmd.light.remove", self._cmd_remove_device)  # 移除设备的命令
+        
+        # 启动设备状态轮询
+        self._poll_task = asyncio.create_task(self._poll_devices())
 
-        # 更新 Plugin 状态到 Resource 系统
+        # 更新插件状态
         await self.k.resources.upsert(Resource(
             resource_id="plugin:light",
             kind="plugin",
             state={"available": True}
         ))
 
-        logger.info("[LightPlugin] 插件启动，已标记 available=True")
-    
-    # ------------------ 插件停止 ------------------
-    async def stop(self):
-        logger.info("[LightPlugin] 正在注销所有事件绑定...")
+        logger.info("[LightPlugin] 插件启动完成")
 
-        # 取消所有注册事件
+    async def stop(self):
+        """停止插件"""
+        logger.info("[LightPlugin] 正在停止插件...")
+        
+        # 取消订阅
         for topic, callback in self._subscriptions:
             await self.k.bus.unsubscribe(topic, callback)
+        
+        # 取消任务
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+        
+        # 关闭会话
+        if self._session:
+            await self._session.close()
+        
+        logger.info("[LightPlugin] 插件已停止")
 
-        self._subscriptions.clear()
+    async def _subscribe(self, topic: str, callback):
+        """订阅事件"""
+        await self.k.bus.subscribe(topic, callback)
+        self._subscriptions.append((topic, callback))
 
-        # 更新 Plugin 状态到 Resource 系统
-        await self.k.resources.upsert(Resource(
-            resource_id="plugin:light",
-            kind="plugin",
-            state={"available": False}
-        ))
-
-        logger.info("[LightPlugin] 插件停止，已标记 available=False")
-
-    # ------------------ 设备存在性检查 ------------------
-    def _check_exists(self, device_id, req_id=None):
-        if device_id not in self.device:
-            logger.warning(f"[LightPlugin] device {device_id} not found")
-            return Event("evt.light.error", {
-                "reason": "device_not_found",
-                "id": device_id,
-                "req_id": req_id
-            })
-        return None
-
-    # ------------------ 开灯 ------------------
-    async def _cmd_on(self, e: Event):
-        device_id = e.payload.get("id")
-
-        if not device_id and self.is_collection:
+    # ==================== 设备管理 ====================
+    async def _cmd_add_device(self, e: Event):
+        """添加新设备"""
+        device_config = e.payload
+        
+        # 必要字段检查
+        required_fields = ["id", "name", "ip"]
+        for field in required_fields:
+            if field not in device_config:
+                await self.k.bus.publish(Event(
+                    "evt.light.error",
+                    {
+                        "reason": f"missing_field_{field}",
+                        "message": f"缺少必要字段: {field}",
+                        "req_id": e.payload.get("req_id")
+                    }
+                ))
+                return
+        
+        device_id = device_config["id"]
+        
+        # 检查设备是否已存在
+        if device_id in self._entities:
             await self.k.bus.publish(Event(
                 "evt.light.error",
                 {
-                    "reason": "missing_device_id",
-                    "message": "请指定设备ID",
+                    "reason": "device_exists",
+                    "message": f"设备已存在: {device_id}",
+                    "device_id": device_id,
                     "req_id": e.payload.get("req_id")
                 }
             ))
             return
         
-        err = self._check_exists(device_id, e.payload.get("req_id"))
-        if err:
-            await self.k.bus.publish(err)
-            return
+        # 创建设备实体
+        entity = LightEntity(
+            id=device_id,
+            name=device_config["name"],
+            location=device_config.get("location", ""),
+            unique_id=device_config.get("unique_id", device_id),
+            state=device_config.get("state", "off"),
+            brightness=device_config.get("brightness", 0),
+            extra_parameter={
+                "ip": device_config["ip"],
+                **device_config.get("extra_parameter", {})
+            },
+            device_info=device_config.get("device_info", {})
+        )
+        
+        # 添加到管理
+        self._entities[device_id] = entity
+        self.device[device_id] = entity.__dict__.copy()
+        
+        logger.info(f"[LightPlugin] 添加设备: {entity.name} (ID: {device_id}, IP: {entity.ip})")
+        
+        # 发布事件
+        await self.k.bus.publish(Event(
+            "evt.light.device_added",
+            {
+                "device_id": device_id,
+                "name": entity.name,
+                "ip": entity.ip,
+                "timestamp": asyncio.get_event_loop().time(),
+                "req_id": e.payload.get("req_id")
+            }
+        ))
 
-        await self.k.run_in_plugin_executor(self, self._sync_turn_on, device_id)
-        await self._update_state(device_id, "on", e.payload.get("req_id"))
-
-    # ------------------ 关灯 ------------------
-    async def _cmd_off(self, e: Event):
+    async def _cmd_remove_device(self, e: Event):
+        """移除设备"""
         device_id = e.payload.get("id")
-
-        if not device_id and self.is_collection:
+        
+        if device_id not in self._entities:
             await self.k.bus.publish(Event(
                 "evt.light.error",
                 {
-                    "reason": "missing_device_id",
-                    "message": "请指定设备ID",
-                    "req_id": e.payload.get("req_id")
-                }
-            ))
-            return
-
-        err = self._check_exists(device_id, e.payload.get("req_id"))
-        if err:
-            await self.k.bus.publish(err)
-            return
-
-        await self.k.run_in_plugin_executor(self, self._sync_turn_off, device_id)
-        await self._update_state(device_id, "off", e.payload.get("req_id"))
-
-    # ------------------ 切换 ------------------
-    async def _cmd_toggle(self, e: Event):
-        device_id = e.payload.get("id")
-
-        if not device_id and self.is_collection:
-            await self.k.bus.publish(Event(
-                "evt.light.error",
-                {
-                    "reason": "missing_device_id",
-                    "message": "请指定设备ID",
-                    "req_id": e.payload.get("req_id")
-                }
-            ))
-            return
-
-        err = self._check_exists(device_id, e.payload.get("req_id"))
-        if err:
-            await self.k.bus.publish(err)
-            return
-
-        prev = self.device[device_id].state
-        new_state = "off" if prev == "on" else "on"
-
-        await self.k.run_in_plugin_executor(self, self._sync_toggle_device, device_id, new_state)
-        await self._update_state(device_id, new_state, e.payload.get("req_id"))
-    async def _cmd_state(self, e: Event):
-        device_id = e.payload.get("id")
-
-        if device_id:
-            if device_id not in self.device:
-                await self.k.bus.publish(Event("evt.light.error", {
                     "reason": "device_not_found",
-                    "id": device_id,
+                    "message": f"设备未找到: {device_id}",
+                    "device_id": device_id,
                     "req_id": e.payload.get("req_id")
-                }))
+                }
+            ))
+            return
+        
+        # 移除设备
+        entity = self._entities.pop(device_id)
+        self.device.pop(device_id, None)
+        
+        logger.info(f"[LightPlugin] 移除设备: {entity.name} (ID: {device_id})")
+        
+        # 发布事件
+        await self.k.bus.publish(Event(
+            "evt.light.device_removed",
+            {
+                "device_id": device_id,
+                "name": entity.name,
+                "timestamp": asyncio.get_event_loop().time(),
+                "req_id": e.payload.get("req_id")
+            }
+        ))
+
+    # ==================== 设备控制 ====================
+    async def _cmd_on(self, e: Event):
+        """开灯"""
+        await self._control_device(e, "on")
+
+    async def _cmd_off(self, e: Event):
+        """关灯"""
+        await self._control_device(e, "off")
+
+    async def _cmd_brightness(self, e: Event):
+        """调整亮度"""
+        device_id = e.payload.get("id")
+        brightness = e.payload.get("brightness")
+        
+        if brightness is None:
+            await self._send_error("缺少亮度参数", device_id, e.payload.get("req_id"))
+            return
+        
+        await self._control_device(e, "brightness", brightness)
+
+    async def _cmd_toggle(self, e: Event):
+        """切换状态"""
+        device_id = e.payload.get("id")
+        
+        if device_id not in self._entities:
+            await self._send_error("设备未找到", device_id, e.payload.get("req_id"))
+            return
+        
+        entity = self._entities[device_id]
+        action = "off" if entity.state == "on" else "on"
+        
+        await self._control_device(e, action)
+
+    async def _cmd_state(self, e: Event):
+        """获取设备状态"""
+        device_id = e.payload.get("id")
+        
+        if device_id:
+            # 单个设备
+            if device_id not in self._entities:
+                await self._send_error("设备未找到", device_id, e.payload.get("req_id"))
                 return
             
-            state = self.device[device_id].state
-            await self.k.bus.publish(Event("evt.light.state", {
-                "id": device_id,
-                "state": state,
-                "req_id": e.payload.get("req_id")
-            }))
+            entity = self._entities[device_id]
+            await self._publish_state(entity, e.payload.get("req_id"))
+        else:
+            # 所有设备
+            all_states = []
+            for entity in self._entities.values():
+                all_states.append({
+                    "id": entity.id,
+                    "name": entity.name,
+                    "state": entity.state,
+                    "brightness": entity.brightness,
+                    "online": entity.online,
+                    "ip": entity.ip
+                })
+            
+            await self.k.bus.publish(Event(
+                "evt.light.all_states",
+                {
+                    "devices": all_states,
+                    "count": len(all_states),
+                    "req_id": e.payload.get("req_id")
+                }
+            ))
+
+    # ==================== 核心控制逻辑 ====================
+    async def _control_device(self, e: Event, action: str, value=None):
+        """控制设备的核心方法"""
+        device_id = e.payload.get("id")
+        
+        # 验证设备
+        if not device_id:
+            await self._send_error("缺少设备ID", None, e.payload.get("req_id"))
             return
         
-        # Filter to return only id and state for each device
-        lights_state = {
-            device_id: {"state": device_entity.state}
-            for device_id, device_entity in self.device.items()
-        }
-        await self.k.bus.publish(Event("evt.light.all_states", {
-            "lights": lights_state,
-            "req_id": e.payload.get("req_id")
-        }))
-
-    # ------------------ 插件调用实体硬件同步接口 ------------------
-    def _sync_turn_on(self, device_id):
-        logger.info(f"[Light Hardware] Turning ON {device_id}")
-        if self.device[device_id].state == "off":
-            res = self.device[device_id].sync_turn_on()
-            if res:
-                logger.info(f"[Light Hardware] Turning ON {device_id} -> Success")
+        if device_id not in self._entities:
+            await self._send_error("设备未找到", device_id, e.payload.get("req_id"))
+            return
+        
+        entity = self._entities[device_id]
+        
+        # 检查设备IP
+        if not entity.ip:
+            await self._send_error("设备没有IP地址", device_id, e.payload.get("req_id"))
+            return
+        
+        try:
+            # 构建HTTP请求URL
+            if action == "on":
+                url = f"http://{entity.ip}/light?state=on"
+                if value:
+                    url += f"&brightness={value}"
+            elif action == "off":
+                url = f"http://{entity.ip}/light?state=off"
+            elif action == "brightness":
+                url = f"http://{entity.ip}/light?brightness={value}"
+                action = "on"  # 设置亮度意味着开灯
             else:
-                logger.warning(f"[Light Hardware] Turning ON {device_id} -> Failed")
-        else:
-            logger.warning(f"[Light Hardware] Turning ON {device_id} -> Already ON")
+                await self._send_error(f"无效的操作: {action}", device_id, e.payload.get("req_id"))
+                return
+            
+            # 发送请求
+            logger.info(f"[LightPlugin] 控制设备: {entity.name} -> {action}")
+            
+            async with self._session.get(url) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"HTTP {response.status}")
+                
+                # 更新设备状态
+                if action == "on":
+                    entity.state = "on"
+                    entity.brightness = value if value else 100
+                elif action == "off":
+                    entity.state = "off"
+                    entity.brightness = 0
+                
+                entity.online = True
+                
+                # 发布状态更新
+                await self._publish_state(entity, e.payload.get("req_id"))
+                
+        except Exception as err:
+            logger.error(f"[LightPlugin] 控制失败: {entity.name} -> {err}")
+            await self._send_error(f"控制失败: {str(err)}", device_id, e.payload.get("req_id"))
+            entity.online = False
 
-    def _sync_turn_off(self, device_id):
-        logger.info(f"[Light Hardware] Turning OFF {device_id}")
-        if self.device[device_id].state == "off":
-            res = self.device[device_id].sync_turn_off()
-            if res:
-                logger.info(f"[Light Hardware] Turning OFF {device_id} -> Success")
-            else:
-                logger.warning(f"[Light Hardware] Turning OFF {device_id} -> Failed")
-        else:
-            logger.warning(f"[Light Hardware] Turning OFF {device_id} -> Already OFF")
+    async def _poll_devices(self):
+        """设备状态轮询"""
+        while True:
+            try:
+                for entity in self._entities.values():
+                    if entity.ip:
+                        await self._check_device_status(entity)
+                
+                await asyncio.sleep(self.poll_interval)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[LightPlugin] 轮询出错: {e}")
+                await asyncio.sleep(self.poll_interval)
 
-    def _sync_toggle_device(self, device_id, new_state):
-        logger.info(f"[Light Hardware] Toggling {device_id} -> {new_state}")
-        if new_state == "off":
-            res = self.device[device_id].sync_turn_off()
-            if res:
-                logger.info(f"[Light Hardware] Turning OFF {device_id} -> Success")
-            else:
-                logger.warning(f"[Light Hardware] Turning OFF {device_id} -> Failed")
-        elif new_state == "on":
-            res = self.device[device_id].sync_turn_on()
-            if res:
-                logger.info(f"[Light Hardware] Turning ON {device_id} -> Success")
-            else:
-                logger.warning(f"[Light Hardware] Turning ON {device_id} -> Failed")
+    async def _check_device_status(self, entity: LightEntity):
+        """检查设备状态"""
+        try:
+            # 使用 /api 接口而不是 /status 接口
+            url = f"http://{entity.ip}/api"
+            async with self._session.get(url) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"HTTP {response.status}")
+                
+                data = await response.json()
+                light_data = data.get("light", {})
+                
+                # 更新状态
+                entity.state = "on" if light_data.get("state") else "off"
+                entity.brightness = light_data.get("brightness", 0)
+                entity.online = True
+                
+                logger.debug(f"设备状态更新成功: {entity.name} -> {entity.state} (亮度: {entity.brightness})")
+                    
+        except Exception as e:
+            logger.warning(f"设备状态更新失败: {entity.name} -> {e}")
+            entity.online = False
 
-    # ------------------ 更新状态并上报事件 ------------------
-    async def _update_state(self, device_id, state, req_id=None):
-        # self.device[rid].state = state
-
-        await self.k.resources.upsert(Resource(
-            resource_id=f"light:{device_id}",
-            kind="device",
-            state={"state": state}
+    # ==================== 辅助方法 ====================
+    async def _publish_state(self, entity: LightEntity, req_id=None):
+        """发布设备状态"""
+        await self.k.bus.publish(Event(
+            "evt.light.state",
+            {
+                "id": entity.id,
+                "name": entity.name,
+                "state": entity.state,
+                "brightness": entity.brightness,
+                "online": entity.online,
+                "ip": entity.ip,
+                "req_id": req_id
+            }
         ))
 
-        await self.k.bus.publish(Event("evt.light.state", {
-            "id": device_id,
-            "state": state,
+    async def _send_error(self, message: str, device_id: str = None, req_id=None):
+        """发送错误消息"""
+        error_data = {
+            "message": message,
             "req_id": req_id
-        }))
-
-        logger.info(f"[LightPlugin] {device_id} -> {state}")
+        }
+        
+        if device_id:
+            error_data["id"] = device_id
+        
+        await self.k.bus.publish(Event(
+            "evt.light.error",
+            error_data
+        ))
